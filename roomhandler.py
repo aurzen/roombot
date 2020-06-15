@@ -4,9 +4,20 @@ import discord
 import aurflux
 from aurflux import MessageContext, AurfluxCog
 from aurflux.response import Response
-from aurflux.argh import arghify, Arg, MemberIDType
+from aurflux.argh import arghify, Arg
 import typing as ty
+from typing import Annotated as Anot
 import base64
+import re
+import argparse
+import sys
+
+
+def MemberIDType(arg: str) -> int:
+    match = re.search(r"<@?!?(\d*)>", arg)
+    if not match:
+        raise argparse.ArgumentError
+    return int(match.group(1))
 
 
 # noinspection PyPep8Naming
@@ -63,9 +74,9 @@ class RoomHandler(AurfluxCog):
     def route(self):
         @arghify
         @self.aurflux.commandeer(name="chat", parsed=True)
-        async def _(ctx: MessageContext, member_ids: Arg(names=("member",), nargs="+", type_=MemberIDType)):
-            members = [ctx.guild.get_member(member_id) for member_id in set(member_ids) | {ctx.author.id}]
+        async def _(ctx: MessageContext, member: 'Arg(names=("member",), nargs="+", type=MemberIDType)'):
 
+            members = [ctx.guild.get_member(member_id) for member_id in (set(member) | {ctx.author.id})]
             if len(members) < 2:
                 return Response(f"Please create a room with at least 2 people!", errored=True)
 
@@ -77,7 +88,9 @@ class RoomHandler(AurfluxCog):
                 overwrites=overwrites_dict
             )
             async with self.aurflux.CONFIG.writeable_conf(ctx) as cfg:
-                cfg["channels"][text_channel.id] = [member.id for member in members]
+                channel_dict = cfg.get("channels", {})
+                channel_dict[text_channel.id] = [member.id for member in members]
+                cfg["channels"] = channel_dict
 
             return Response(f"Created! {text_channel.mention}\n"
                             f"{', '.join(member.mention for member in members)}")
@@ -94,7 +107,7 @@ class RoomHandler(AurfluxCog):
             return Response(f"Locking channel! {get_moderator_role(ctx.guild).mention}")
 
         @self.aurflux.commandeer(name="leave", parsed=False)
-        async def _(ctx: MessageContext):
+        async def _(ctx: MessageContext, _):
             """
             leave
             Leaves the channel
@@ -103,16 +116,16 @@ class RoomHandler(AurfluxCog):
             :return:
             """
             aurconf = self.aurflux.CONFIG
-            if ctx.channel.id not in aurconf.of(ctx)["channels"]:
+            if "channels" not in aurconf.of(ctx) or ctx.channel.id not in aurconf.of(ctx)["channels"]:
                 return Response("This can only be used in a roombot channel!", errored=True)
             await ctx.channel.set_permissions(ctx.author, overwrite=None)
 
-            if len(ctx.channel.overwrites) == 1:
+            if len(ctx.channel.overwrites) == 2:
                 await ctx.channel.delete()
                 async with aurconf.writeable_conf(ctx) as cfg:
                     del cfg["channels"][ctx.channel.id]
             else:
-                if len(ctx.channel.overwrites) == 2:
+                if len(ctx.channel.overwrites) == 3:
                     await ctx.channel.edit(reason="Users have dropped down to 1 in channel",
                                            topic=str_2_base64(datetime.utcnow().isoformat()))
                 async with aurconf.writeable_conf(ctx) as cfg:
@@ -124,6 +137,8 @@ class RoomHandler(AurfluxCog):
             for guild in self.aurflux.guilds:
                 guild: discord.Guild
                 configs = self.aurflux.CONFIG.of(guild.id)
+                if "channels" not in configs:
+                    return
                 for channel in [self.aurflux.get_channel(c) for c in configs["channels"]]:
                     if ((topic := channel.topic) and
                             datetime.utcnow() - datetime.fromisoformat(base64_2_str(topic)) > timedelta(days=1)):
